@@ -1,0 +1,8 @@
+title = "Roro secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known deliberately public test-only RSA key; check-secrets pins its bytes"
+paths = ['''(^|/)tests/fixtures/ci-test-private\.pem$''']

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+fail() { printf 'static check: %s\n' "$*" >&2; exit 1; }
+[[ $# == 1 && -f $1 ]] || fail 'usage: scripts/check-static PATH_TO_ELF'
+command -v readelf >/dev/null || fail 'readelf is required (binutils)'
+header=$(readelf --wide --file-header -- "$1") || fail 'not a readable ELF binary'
+grep -Eq 'Type:[[:space:]]+(EXEC|DYN)' <<< "$header" || fail 'ELF is not an executable/static PIE'
+program=$(readelf --wide --program-headers -- "$1") || fail 'cannot read ELF program headers'
+grep -Eq '(^|[[:space:]])LOAD([[:space:]]|$)' <<< "$program" || fail 'ELF has no loadable segments'
+if grep -Eq '(^|[[:space:]])INTERP([[:space:]]|$)' <<< "$program"; then fail 'ELF requests a dynamic loader'; fi
+dynamic=$(readelf --wide --dynamic -- "$1") || fail 'cannot read ELF dynamic section'
+if grep -Fq '(NEEDED)' <<< "$dynamic"; then fail 'ELF depends on shared libraries'; fi
+printf 'Verified static ELF: %s (no interpreter or shared-library dependencies)\n' "$1"

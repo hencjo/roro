@@ -1,0 +1,72 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo test --locked --lib tls::tests::https_works_and_plaintext_is_rejected -- --ignored --exact
+      - run: cargo test --locked --lib http::protocol_tests::legacy_streamed_patch_over_tls_http1_and_http2 -- --ignored --exact
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - run: ./scripts/check-static target/x86_64-unknown-linux-musl/release/roro
+  release-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-release --version 1.1.1 --locked
+      - run: shellcheck scripts/release scripts/package scripts/publish scripts/check-static scripts/check-release scripts/tests/*.sh
+      - run: RELEASE_TEST_REAL=1 ./scripts/tests/release.sh
+      - run: ./scripts/tests/artifacts.sh
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@v31
+      - name: Scan history and working files; test refusal paths
+        run: nix shell .#release-tools --command bash -c 'python3 -B scripts/check-secrets && python3 -B scripts/tests/secrets.py'
+  docker-legacy-acceptance:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [http1, http2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y rootlesskit uidmap
+      - name: Allow isolated rootless test namespaces on this disposable runner
+        run: |
+          if test -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Fetch legacy Docker test binaries
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker24"
+          curl --fail --location https://download.docker.com/linux/static/stable/x86_64/docker-24.0.5.tgz -o "$RUNNER_TEMP/docker24.tgz"
+          echo "0a5f3157ce25532c5c1261a97acf3b25065cfe25940ef491fa01d5bea18ddc86  $RUNNER_TEMP/docker24.tgz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/docker24.tgz" --strip-components=1 -C "$RUNNER_TEMP/docker24"
+      - name: Push five 64-MiB layers with the real classic pusher
+        env:
+          DOCKER_BIN_DIR: ${{ runner.temp }}/docker24
+          RORO_DOCKER_TRANSPORT: ${{ matrix.transport }}
+          RORO_DOCKER_REQUIRE_HEADERLESS: '1'
+        run: ./scripts/tests/docker-push.sh

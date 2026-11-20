@@ -1,0 +1,46 @@
+[package]
+name = "roro"
+version = "0.2.1"
+edition = "2024"
+rust-version = "1.89"
+description = "Roll On Roll Off — a disk-backed OCI registry"
+license = "MIT"
+publish = false
+
+[dependencies]
+axum = "0.8"
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+base64 = "0.22"
+futures-util = "0.3"
+hex = "0.4"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+rand = "0.9"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rustix = { version = "1", features = ["fs"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["http2"] }
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = "z"

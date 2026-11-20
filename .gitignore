@@ -1,0 +1,28 @@
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+# Rust and runtime state
+/target/
+/data/
+/config.yaml
+
+# Local release builds
+/dist/
+
+result
+
+# Local credentials and agent state (never public source)
+/.aws/
+/.codex/
+/.agents/
+/.env
+/.env.*
+__pycache__/

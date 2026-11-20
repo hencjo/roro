@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Collect Cargo dependency license notices; no runtime or build service required."""
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+output = Path(sys.argv[1])
+supplemental = Path(__file__).resolve().parents[1] / "third-party"
+metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version=1"]))
+lines = ["# Third-party notices", "", "Roro is MIT-licensed. Dependencies retain their own licenses.",
+         "This inventory includes resolved development/platform dependencies as well as runtime dependencies.",
+         "Cargo.lock records exact versions and registry checksums; the source archive records Roro's source.", ""]
+for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version"])):
+    if package["name"] == "roro":
+        continue
+    name = f'{package["name"]}-{package["version"]}'
+    root = Path(package["manifest_path"]).parent
+    lines += [f'## {name}', "", f'License: {package.get("license") or "see supplied license files"}', ""]
+    found = []
+    for source in sorted(root.rglob("*")):
+        if source.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE", "AUTHORS", "COPYRIGHT")) and source.is_file():
+            if source.is_symlink():
+                raise RuntimeError(f"Refusing symlinked license file: {name}")
+            relative = source.relative_to(root)
+            target = output / "licenses" / name / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            found.append(str(Path("licenses") / name / relative))
+    if not found:
+        for source in sorted((supplemental / name).glob("LICENSE*")):
+            target = output / "licenses" / name / source.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            found.append(str(target.relative_to(output)))
+    if not found:
+        raise RuntimeError(f"No license notice files for {name}; review before distributing")
+    lines += [f'- [{path}]({path})' for path in found] + [""]
+(output / "THIRD_PARTY_NOTICES.md").write_text("\n".join(lines))

@@ -1,0 +1,8 @@
+listen: 0.0.0.0:443
+dataRoot: /var/lib/roro
+publicUrl: https://registry.example.com
+gitlabIssuer: https://gitlab.example.com
+# internalCa: /etc/ssl/certs/company-root.pem
+# Provide both to use your own certificate/key (PEM). Otherwise Roro generates its own.
+# tlsCert: /etc/roro/fullchain.pem
+# tlsKey: /etc/roro/private-key.pem

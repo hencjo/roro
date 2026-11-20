@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+python3 -B scripts/check-secrets
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+shellcheck scripts/release scripts/package scripts/publish scripts/check-static scripts/check-release scripts/tests/*.sh
+RELEASE_TEST_REAL=1 bash scripts/tests/release.sh
+bash scripts/tests/artifacts.sh
+python3 -B scripts/tests/secrets.py

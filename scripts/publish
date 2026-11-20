@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+fail() { printf 'publish: %s\n' "$*" >&2; exit 1; }
+execute=false
+skip_build=false
+tag=''
+for arg in "$@"; do
+    case "$arg" in
+        --execute) execute=true ;;
+        --skip-build) skip_build=true ;;
+        roro-v*) [[ -z $tag ]] || fail 'specify one release tag'; tag=$arg ;;
+        *) fail 'usage: scripts/publish [--execute] [--skip-build] roro-v<VERSION>' ;;
+    esac
+done
+[[ -n $tag ]] || fail 'specify a release tag'
+./scripts/release --verify-tag "$tag"
+[[ -z $(git status --porcelain --untracked-files=all) ]] || fail 'working tree must be clean, including untracked files'
+version=${tag#roro-v}
+arch=$(uname -m)
+archive="roro-${version}-linux-${arch}-static.tar.gz"
+source="roro-${version}-source.tar.gz"
+if [[ $execute == false ]]; then
+    printf 'Preview: %sbuild %s locally, verify the pushed tag and checksum, then upload to a draft GitHub release and publish it.\n' "$([[ $skip_build == true ]] && printf 'reuse artifacts; do not ' || true)" "$archive"
+    printf 'No files or remote releases changed. Add --execute to publish.\n'
+    exit 0
+fi
+python3 -B scripts/check-secrets
+command -v gh >/dev/null || fail 'gh is required; enter devenv shell'
+if [[ $skip_build == false ]]; then ./scripts/package "$tag"; fi
+python3 -B scripts/check-package "$tag" "$arch"
+remote_tags=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")
+remote_object=$(awk -v ref="refs/tags/$tag" '$2 == ref { print $1 }' <<< "$remote_tags")
+remote_commit=$(awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1 }' <<< "$remote_tags")
+[[ $remote_object == "$(git rev-parse "refs/tags/$tag")" && $remote_commit == "$(git rev-parse HEAD)" ]] || fail 'origin must contain the exact annotated release tag; push it atomically first'
+repo=$(gh repo view "$(git remote get-url origin)" --json nameWithOwner --jq .nameWithOwner)
+[[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'could not resolve GitHub origin repository'
+# A failed API request is not evidence that the release is absent.
+tags=$(gh api --paginate "repos/$repo/releases?per_page=100" --jq '.[] | [.tag_name, .draft] | @tsv')
+existing=$(awk -F '\t' -v tag="$tag" '$1 == tag { print $2 }' <<< "$tags")
+[[ -z $existing || $existing == true ]] || fail 'release already published; never overwrite published assets'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+notes="$work/notes.md"
+./scripts/release --notes "$version" > "$notes"
+if [[ -z $existing ]]; then
+    gh release create "$tag" --repo "$repo" --verify-tag --draft --title "$tag" --notes-file "$notes"
+fi
+gh release upload "$tag" "dist/$archive" "dist/$archive.sha256" "dist/$source" "dist/$source.sha256" --repo "$repo" --clobber
+gh release edit "$tag" --repo "$repo" --draft=false --notes-file "$notes"
+printf 'Published %s: %s\n' "$repo" "$tag"
