@@ -26,6 +26,14 @@
 
 ### Documentation
 
+- Lead with automatic GitLab project namespaces and role-based write access;
+  simplify startup/TLS examples, move developer workflows to CONTRIBUTING and
+  preserve detailed deployment guidance in an operations guide.
+- Explain Roro's GitLab CI workflow and low-overhead deployment model up front,
+  with prominent public-pull and automatic tag-expiry defaults.
+- Diagram multiple TLS-only instances sharing one data directory, including
+  load balancing, filesystem-locking requirements and shared-storage limitations.
+
 ### Upgrade notes
 
 ## [0.2.1] - 2026-10-22

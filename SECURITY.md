@@ -18,4 +18,5 @@ GitLab issuer's signing keys, not this fixture. Never reuse the fixture key.
 Shared-disk deployments assume trustworthy storage, working cross-host advisory
 locks, and the same service UID across replicas. A compromised service UID or
 storage server is outside the filesystem path-validation threat model. See
-README.md and docs/acceptance.md for TLS, retention, backup, and NFS requirements.
+[README](README.md), [operations](docs/operations.md), and the
+[acceptance checklist](docs/acceptance.md) for TLS, retention, backup, and NFS requirements.

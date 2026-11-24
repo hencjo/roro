@@ -1,90 +1,95 @@
 # roro
 
-**Roll On Roll Off.**
+**A container registry with less to operate.**
 
-A small Rust OCI/Docker registry: one binary, one shared directory, no database.
+Roro (Roll On Roll Off) is a small OCI/Docker registry built for GitLab CI.
+Your GitLab project path becomes the image namespace; your GitLab role determines
+write access. Push with the identity your CI job already has, and pull with ordinary
+Docker clients. Run the registry as one statically linked Rust binary backed by
+a directory on disk—no database, object store, or separate auth service to deploy.
 
-**All images are publicly pullable.** GitLab CI identities authorize publishing;
-Maintainer-or-higher jobs can delete. There are no local users or stored CI secrets.
+- **GitLab projects are your namespaces.** `team/app` automatically gets
+  `registry.example.com/team/app` and its subpaths. No repository provisioning.
+- **GitLab roles control writes.** Roro verifies signed CI job claims: Developers
+  can publish; Maintainers can delete. No second user database or ACL to maintain,
+  no stored GitLab API credentials or OAuth app setup. Pulls remain public.
+- **Disk is the storage backend.** Content-addressed images, resumable uploads,
+  and filesystem locks instead of a database or distributed lock service.
+- **One instance or several sharing storage.** Replicas use the same directory;
+  no sticky sessions. Shared storage must provide working cross-host locks—see
+  [deployment requirements](#shared-disk-deployment).
+- **HTTPS is not optional.** Supply a certificate or let Roro generate a
+  persistent self-signed one. There is no plaintext fallback.
+- **Cleanup is built in.** Automatic retention and garbage collection reclaim
+  old content without a separate cleanup service.
+
+Roro fits teams that want a straightforward registry for **publicly pullable
+CI images**, not another platform to administer. It is not a private image vault
+or an upstream registry cache.
+
+**Know the defaults:** anyone who can reach the registry can pull images.
+`latest` is kept indefinitely; every other tag expires 30 days after its last
+push, including release tags. Pulls do not extend retention. Read the
+[retention rules](#retention--read-before-storing-production-images) before storing
+production images.
+
+## One binary. One data directory. Optional replicas.
+
+Start with one Roro instance and a disk. **Multiple instances can read and write
+the same shared data directory**, coordinating through filesystem locks rather
+than a database or lock service. Put them behind a load balancer; uploads do not
+need sticky sessions.
+
+```mermaid
+flowchart LR
+    CI["GitLab CI job"] -->|"HTTPS push · CI ID token"| LB["Optional load balancer"]
+    Client["Docker client"] -->|"HTTPS pull · anonymous"| LB
+    LB -->|"TLS passthrough"| A["Roro instance 1"]
+    LB -->|"TLS passthrough"| B["Roro instance 2"]
+    A <-->|"Files + locks"| Disk[("Shared data directory")]
+    B <-->|"Files + locks"| Disk
+```
+
+For a single instance, clients connect directly—no load balancer required.
+GitLab supplies the CI identity and signing keys; Roro handles the registry token
+exchange itself. Each Roro listener is TLS-only.
+
+This is **shared storage, not storage replication**: replicas still depend on the
+same filesystem. Across hosts, use storage with working cross-client advisory
+locks and validate it with the [acceptance checklist](docs/acceptance.md).
+Local tests do not certify your NFS setup. See
+[shared-disk deployment](#shared-disk-deployment) for configuration and mount requirements.
 
 ## Run
 
-For a packaged release, download the static Linux archive for your architecture
-and its `.sha256` file from GitHub Releases, then verify before extracting:
-
-```sh
-sha256sum --check roro-<version>-linux-<arch>-static.tar.gz.sha256
-tar -xzf roro-<version>-linux-<arch>-static.tar.gz
-./roro-<version>-linux-<arch>-static/roro --version
-```
-
-The checksum detects corruption, not a compromised download source. Keep the
-bundled license notices when redistributing. No Nix installation, container,
-OpenSSL or glibc is needed on the target host. Building from source:
-
-```sh
-devenv shell
-nix build .#roro
-cp config.example.yaml config.yaml
-# Set dataRoot, publicUrl, and your GitLab HTTPS gitlabIssuer explicitly.
-./result/bin/roro serve --config config.yaml
-```
-
-Rust 1.89+ on Linux is required. `--help` and `--version` need no configuration.
-Terminate with SIGINT or SIGTERM for graceful shutdown. JSON logs go to stdout;
-`RUST_LOG=roro=debug` adjusts verbosity. Credentials and query strings
-are never logged.
-
-## Mandatory HTTPS
-
-Roro listens on **`0.0.0.0:443`** by default and never serves plaintext HTTP,
-including health checks, metrics, and the token endpoint. TLS uses rustls; there
-is no OpenSSL runtime dependency. Port 443 may require a service capability such
-as systemd `AmbientCapabilities=CAP_NET_BIND_SERVICE`; do not run the service as
-root just to bind a port. Use an explicit high-port `listen` value when needed,
-and include that port in `publicUrl` if clients connect to it directly.
-
-Provide your own PEM certificate chain and matching unencrypted private key:
+Download and unpack the static Linux release for your architecture. No Nix,
+container, OpenSSL or glibc is needed on the host. Save this as `config.yaml`:
 
 ```yaml
-tlsCert: /etc/roro/fullchain.pem
-tlsKey: /etc/roro/private-key.pem
+listen: 0.0.0.0:443
+dataRoot: /var/lib/roro
+publicUrl: https://registry.example.com
+gitlabIssuer: https://gitlab.example.com
+# Optional: supply both PEM files; omit both to generate a self-signed certificate.
+# tlsCert: /etc/roro/fullchain.pem
+# tlsKey: /etc/roro/private-key.pem
 ```
 
-Both fields must be supplied together. Invalid, missing, or mismatched supplied
-credentials fail startup; Roro never falls back to plaintext or silently
-substitutes another certificate. Restart instances after replacing supplied
-certificates (live certificate reloading/ACME is not implemented).
+```sh
+roro serve --config config.yaml
+```
 
-Omit both fields to generate a **self-signed** server certificate for the hostname
-or IP in `publicUrl`, valid for one year. Its private key and certificate are
-persisted atomically as `dataRoot/gc/tls-identity.json` with mode 0600, under a
-cross-instance file lock. Replicas sharing storage reuse exactly the same identity.
-The public certificate is exported to `dataRoot/gc/tls-cert.pem`; install that
-certificate in Docker/client trust stores before sending credentials. For Docker,
-copy only the public certificate to `/etc/docker/certs.d/<registry-host[:port]>/ca.crt`
-on the client host. Never distribute the identity JSON or disable TLS verification
-as the production solution. A self-signed certificate is not publicly trusted.
+HTTPS is mandatory. With generated TLS, install `dataRoot/gc/tls-cert.pem` in
+your Docker clients' trust stores. See [operations](docs/operations.md) for
+installation, port permissions and certificate management.
 
-Roro does not silently rotate this identity, which would break installed client
-trust. Renew before expiry using a CA-signed pair, or stop all replicas, back up
-storage, explicitly remove the generated identity/public-certificate files, restart,
-and install the new public certificate on clients. Expired or corrupt stored
-identities fail startup rather than being silently replaced. Supplied certificate
-lifecycle management remains the operator's responsibility.
+## GitLab namespaces and CI publishing
 
-A reverse proxy is optional, but the upstream is **also HTTPS**: validate Roro's
-certificate against its issuer/public certificate and set SNI to the `publicUrl`
-hostname. Forward Authorization unchanged, allow all registry HTTP methods, and
-avoid upload buffering/short timeouts. There is no plaintext backend mode.
-The token service uses the configured public origin, not untrusted Host headers.
-
-`/livez`, `/readyz`, and Prometheus-format `/metrics` are available over HTTPS.
-Restrict monitoring paths at your proxy if they must not be public. Readiness
-checks shared storage. Startup requires reachable GitLab OIDC discovery; cached
-keys permit subsequent authentication during short outages.
-
-## Publish from GitLab CI
+**Create the project in GitLab, not in Roro.** A GitLab project `team/app`
+automatically has write access to `registry.example.com/team/app` and its
+subpaths. Groups and subgroups follow the GitLab project path. There are no
+registry namespaces to provision or separate permissions to synchronize:
+Roro derives the namespace and write permissions from the signed CI job identity.
 
 ```yaml
 publish:
@@ -143,61 +148,20 @@ sweeping rather than guessing what to delete.
 
 ## Shared-disk deployment
 
-Run multiple instances with the **same dataRoot, publicUrl, GitLab issuer, Unix
-UID, and storage format**. Each can listen on a different address and sit behind
-a load balancer without sticky sessions. Their generated signing secret and
-project/path bindings live on the shared disk. Do not mix incompatible versions.
+Multiple Roro instances can read and write the **same shared data directory**.
+Use the same `dataRoot`, `publicUrl`, GitLab issuer, service UID and storage format
+on every instance. No sticky sessions or separate coordination service is needed.
 
-Use a local Linux filesystem or a properly configured **NFSv4 hard mount** with
-cross-client advisory locking. `soft`, `softerr`, `softreval`, `nolock`, and
-`local_lock=all/flock` are rejected when detected. FUSE, SMB/CIFS, and 9p are not
-supported. All storage subdirectories must stay on the same filesystem. The
-startup lock probe checks only this client; it does **not** certify cross-host
-semantics. Follow [the acceptance checklist](docs/acceptance.md) on your real share.
+Shared storage must provide cross-client advisory locks and durable writes.
+Use a local Linux filesystem or a properly configured NFSv4 hard mount; validate
+cross-host behavior using the [acceptance checklist](docs/acceptance.md). Local
+tests do not certify an NFS setup. Never delete lock files or steal locks by age.
 
-Never remove lock files, replace their directory, or steal locks based on age.
-Transient upload, active-transfer, and staging locks use separate fixed hash buckets (4096 per lock class), so
-lock files do not accumulate per request. Bucket collisions only serialize work.
-Other locks remain persistent. File descriptors release locks after process death.
-Storage-server lease recovery and fencing during partitions are infrastructure
-responsibilities; stop unhealthy writers instead of forcing a lock takeover.
+See [operations](docs/operations.md#shared-disk-deployment) for mount restrictions,
+backup and migration procedures. Back up the **entire data directory**, including
+its signing secrets and namespace bindings—not just the images.
 
-Release packaging/uploads (including reused archives), CI, and Nix installation inspect ELF headers and reject any
-dynamic loader (`PT_INTERP`) or shared-library dependency (`DT_NEEDED`). Native
-Cargo development builds are not release artifacts; use the musl target or Nix.
-
-Only registry processes may write the dataRoot. Symlinks in storage are rejected;
-this is not a defense against a hostile process running as the service's own UID.
-The service checks digests before publication, uses immutable canonical content,
-and acknowledges upload checkpoints only after data/metadata synchronization.
-A retry truncates unacknowledged upload tails. Disk-full, lock, or I/O errors must
-be treated as failed requests, not successful pushes.
-
-### Backup and migration
-
-Back up the **entire dataRoot**, including `gc/` (signing secret, format marker,
-GitLab ID/path bindings, reachability checkpoints). Use a storage snapshot or stop
-all instances for a consistent backup. Never copy just blobs and tags while writes
-are running. Keep private signing material readable only by the service account.
-
-Project-path reuse by a different GitLab project ID is denied. Renames, transfers,
-registry-origin changes, and GitLab-issuer changes require stopping all instances,
-a consistent backup, and an explicit metadata migration; there is no automatic
-adoption or built-in migration command in v1. Do not delete binding files to
-silently give a new project somebody else's images.
-
-## Development and compatibility
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-# Static Linux binary (musl toolchain/linker required):
-cargo build --release --locked --target x86_64-unknown-linux-musl
-./scripts/check-static target/x86_64-unknown-linux-musl/release/roro
-# All exported Nix packages (default, roro, static) are static musl builds:
-nix build .#static
-```
+## Compatibility
 
 Implements Distribution `/v2/` image pull/push, SHA-256 blobs, resumable uploads,
 blob mounts, ranges, tag pagination, OCI/Docker manifests and indexes, and manifest
@@ -209,20 +173,6 @@ listing, private pulls, artifact-referrer discovery, replication, quotas, scanni
 and GitLab's deprecated external-registry integration are not implemented.
 No full OCI certification or Docker/BuildKit acceptance claim is made without the
 external checks in [docs/acceptance.md](docs/acceptance.md).
-
-`tests/fixtures/ci-test-private.pem` is deliberately public, test-only key material;
-it is never accepted by the production GitLab verifier.
-
-## Releases
-
-Release locally with `./scripts/release` (preview) or `./scripts/release --execute`.
-Versions come from the hand-written Unreleased changelog; the script stamps,
-commits, tags, builds static artifacts locally, pushes the release refs atomically,
-and uploads static binary and source archives with SHA-256 checksums using `gh`.
-Packages include dependency notices and commit/source provenance; uploaded ELF
-files must have neither an interpreter nor shared-library dependencies.
-CI does not publish releases. Published assets and tags are never overwritten.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites and safe recovery.
 
 ## License and security
 

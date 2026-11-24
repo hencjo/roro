@@ -12,6 +12,43 @@ of every Git ref, staged files and nonignored working files. The public RSA test
 fixture is exempted only at its exact path and pinned bytes; never use it outside
 tests. Secret scanning is not a substitute for reviewing source/history privacy.
 
+## Build and run from source
+
+Rust 1.89+ on Linux is required. With Nix/devenv:
+
+```sh
+devenv shell
+nix build .#roro
+cp config.example.yaml config.yaml
+# Set dataRoot, publicUrl and gitlabIssuer for your environment.
+./result/bin/roro serve --config config.yaml
+```
+
+For conventional Cargo development, `cargo build --locked` works too. Native
+Cargo builds are not static release artifacts. Build and verify musl explicitly:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+# Static Linux binary (musl toolchain/linker required):
+cargo build --release --locked --target x86_64-unknown-linux-musl
+./scripts/check-static target/x86_64-unknown-linux-musl/release/roro
+# All exported Nix packages (default, roro, static) are static musl builds:
+nix build .#static
+```
+
+Release packaging/uploads (including reused archives), CI, and Nix installation
+inspect ELF headers and reject any dynamic loader (`PT_INTERP`) or shared-library
+dependency (`DT_NEEDED`).
+
+`tests/fixtures/ci-test-private.pem` is deliberately public, test-only key material;
+it is never accepted by the production GitLab verifier.
+
+Protocol compatibility and limits are documented in the
+[README](README.md#compatibility); external validation steps and the limits of
+local test evidence are in [docs/acceptance.md](docs/acceptance.md).
+
 ## Changelog-driven versions
 
 Use Conventional Commit summaries, but write release notes by hand under
